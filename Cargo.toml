@@ -1,0 +1,12 @@
+[package]
+name = "axiarz-ecommerce-backend"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = [".", "api", "service", "entity", "migration"]
+
+[dependencies]
+api = { path = "api" }
+openssl-sys = "0.9"
+openssl = { version = "0.10.33", features = ["vendored"] }

@@ -1,0 +1,28 @@
+[package]
+name = "api"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+anyhow = "1.0.93"
+axum = { version = "0.7.9", features = ["multipart"] }
+dotenvy = "0.15.7"
+serde = "1.0.215"
+serde_json = "1.0.133"
+tera = "1.20.0"
+tokio = { version = "1.42.0", features = ["full"] }
+tower = "0.5.1"
+tower-cookies = "0.10.0"
+tower-http = { version = "0.6.2", features = ["fs", "cors"] }
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+service = { path = "../service" }
+entity = { path = "../entity" }
+migration = { path = "../migration" }
+jsonwebtoken = "9.3.0"
+bcrypt = "0.16.0"
+chrono = { version = "0.4.39", features = ["serde"] }
+thiserror = "2.0.10"
+wechat-pay-rust-sdk = "0.2.18"
+alipay_sdk_rust = "1.0.12"
+reqwest = { version = "0.12.23", features = ["json", "__tls"] }
