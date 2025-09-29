@@ -26,3 +26,4 @@ thiserror = "2.0.10"
 wechat-pay-rust-sdk = "0.2.18"
 alipay_sdk_rust = "1.0.12"
 reqwest = { version = "0.12.23", features = ["json", "__tls"] }
+minio = "0.4"

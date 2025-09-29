@@ -46,6 +46,19 @@ async fn start() -> anyhow::Result<()> {
     let port = env::var("PORT").expect("PORT is not set in .env file");
     let server_url = format!("{host}:{port}");
 
+    // 初始化 MinIO 客戶端
+    let endpoint = "http://127.0.0.1:9000";
+    let access_key = "minioadmin";
+    let secret_key = "minioadmin";
+    let bucket = "photos";
+
+    let minio = MinioClient::new(endpoint, access_key, secret_key, None).unwrap();
+
+    // 確保 bucket 存在
+    if let Ok(false) = minio.bucket_exists(bucket).send().await {
+        let _ = minio.create_bucket(bucket).send().await;
+    }
+
     // 连接数据库并执行迁移
     let conn = Database::connect(db_url)
         .await
@@ -56,8 +69,10 @@ async fn start() -> anyhow::Result<()> {
     let templates = Tera::new(concat!(env!("CARGO_MANIFEST_DIR"), "/templates/**/*"))
         .expect("Tera initialization failed");
 
+        let base_url = "http://localhost:9000/photos";
+
     // 创建应用状态
-    let state = AppState { templates, conn };
+    let state = AppState { templates, conn, minio,base_url };
 
     // 配置路由
     let app = Router::new()

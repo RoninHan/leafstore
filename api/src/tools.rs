@@ -5,6 +5,8 @@ use tera::Tera;
 pub struct AppState {
     pub templates: Tera,
     pub conn: DatabaseConnection,
+    pub minio: MinioClient,
+    pub base_url: String,
 }
 
 #[derive(Deserialize)]
