@@ -6,6 +6,8 @@ use axum::{
     Extension,
 };
 use entity::users::Model as UserEntity;
+use futures_util::StreamExt;
+use minio::s3::{builders::ObjectContent, types::S3Api};
 use service::{block::BlockModel, sea_orm::sqlx::types::uuid, BlockServices};
 
 use serde_json::json;
@@ -40,70 +42,151 @@ impl BlockController {
         Ok(Json(json!(json_data)))
     }
 
-    pub async fn create_block(
+    pub async fn upload_pic(
         Extension(user): Extension<UserEntity>,
         State(state): State<AppState>,
         mut multipart: Multipart,
     ) -> Result<Json<serde_json::Value>, (StatusCode, &'static str)> {
-        let mut context: Option<String> = None;
-        let mut image_url: Option<String> = None;
+        let mut image_url: Option<Vec<String>> = None;
 
-        while let Some(field) = multipart.next_field().await.unwrap() {
-            let name = field.name().map(|s| s.to_string()).unwrap_or_default();
+        loop {
+            match multipart.next_field().await {
+                Ok(Some(field)) => {
+                    let name = field.name().map(|s| s.to_string()).unwrap_or_default();
 
-            if name == "title" {
-                let text = field.text().await.unwrap_or_default();
-                title = Some(text);
-            } else if name == "image" {
-                // 處理圖片上傳
-                if let Some(filename) = field.file_name() {
-                    let data = field.bytes().await.unwrap();
-                    let object_key = format!("images/{}/{}", record_id, filename);
+                    if name == "image" {
+                        // 處理圖片上傳
+                        if let Some(filename) = field.file_name().map(|f| f.to_string()) {
+                            // Read the field as a stream and collect bytes
+                            let mut data_bytes: Vec<u8> = Vec::new();
+                            let mut stream = field;
+                            while let Some(chunk_res) = stream.next().await {
+                                match chunk_res {
+                                    Ok(chunk) => data_bytes.extend_from_slice(&chunk),
+                                    Err(e) => {
+                                        eprintln!("failed to read file chunk: {:?}", e);
+                                        return Err((
+                                            StatusCode::BAD_REQUEST,
+                                            "failed to read file bytes",
+                                        ));
+                                    }
+                                }
+                            }
 
-                    // 上傳到 MinIO
-                    let res = state
-                        .minio
-                        .put_object(&state.bucket, &object_key, &data)
-                        .send()
-                        .await;
+                            let object_key = format!("images/{}/{}", user.id, filename);
+                            let content = ObjectContent::from(data_bytes.clone());
+                            // 上傳到 MinIO
+                            let res = state
+                                .client
+                                .put_object_content(&state.bucket, &object_key, content)
+                                .send()
+                                .await;
 
-                    match res {
-                        Ok(_) => {
-                            // 拼圖片訪問 URL
-                            let url = format!("{}/{}", state.base_url, object_key);
-                            image_url = Some(url);
-                        }
-                        Err(e) => {
-                            eprintln!("上傳圖片失敗: {:?}", e);
-                            return (
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                Json(json!({"success": false, "message": "upload image failed"})),
-                            );
+                            match res {
+                                Ok(_) => {
+
+                                    // 拼圖片訪問 URL
+                                    let url = format!("{}/{}", state.base_url, object_key);
+                                    image_url.get_or_insert_with(Vec::new).push(url);
+                                }
+                                Err(e) => {
+                                    eprintln!("上傳圖片失敗: {:?}", e);
+                                    return Err((
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        "upload image failed",
+                                    ));
+                                }
+                            }
                         }
                     }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    eprintln!("multipart read error: {:?}", e);
+                    return Err((StatusCode::BAD_REQUEST, "failed to read multipart stream"));
                 }
             }
         }
 
-        // 檢查必填字段
-        let title = if let Some(t) = context {
-            t
-        } else {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"success": false, "message": "missing context"})),
-            );
+        let data = ResponseData {
+            code: 200,
+            status: ResponseStatus::Success,
+            data: Some(json!({
+                "image_url": image_url,
+            })),
+            message: Some("Image uploaded successfully".to_string()),
         };
 
-        let image_url = if let Some(url) = image_url {
-            url
-        } else {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"success": false, "message": "missing image"})),
-            );
-        };
+        let json_data = to_value(data).unwrap();
+        println!("Json data: {:?}", json_data);
+        Ok(Json(json!(json_data)))
+    }
 
+    pub async fn delete_pic(
+        Extension(user): Extension<UserEntity>,
+        State(state): State<AppState>,
+        mut multipart: Multipart,
+    ) -> Result<Json<serde_json::Value>, (StatusCode, &'static str)> {
+        let mut image_url: Option<Vec<String>> = None;
+        loop {
+            match multipart.next_field().await {
+                Ok(Some(field)) => {
+                    let name = field.name().map(|s| s.to_string()).unwrap_or_default();
+
+                    if name == "image" {
+                        // 處理圖片刪除
+                        if let Some(filename) = field.file_name() {
+                            let object_key = format!("images/{}/{}", user.id, filename);
+
+                            // 從 MinIO 刪除圖片
+                            let res = state
+                                .client
+                                .delete_object(&state.bucket, &object_key)
+                                .send()
+                                .await;
+
+                            match res {
+                                Ok(_) => {
+                                    // 拼圖片訪問 URL
+                                    let url = format!("{}/{}", state.base_url, object_key);
+                                    image_url.get_or_insert_with(Vec::new).push(url);
+                                }
+                                Err(e) => {
+                                    eprintln!("刪除圖片失敗: {:?}", e);
+                                    return Err((
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        "delete image failed",
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    eprintln!("multipart read error: {:?}", e);
+                    return Err((StatusCode::BAD_REQUEST, "failed to read multipart stream"));
+                }
+            }
+        }
+        let data = ResponseData {
+            code: 200,
+            status: ResponseStatus::Success,
+            data: Some(json!({
+                "image_url": image_url,
+            })),
+            message: Some("Image deleted successfully".to_string()),
+        };
+        let json_data = to_value(data).unwrap();
+        println!("Json data: {:?}", json_data);
+        Ok(Json(json!(json_data)))
+    }
+
+    pub async fn create_block(
+        Extension(user): Extension<UserEntity>,
+        State(state): State<AppState>,
+        Json(payload): Json<BlockModel>,
+    ) -> Result<Json<serde_json::Value>, (StatusCode, &'static str)> {
         BlockServices::create_block(&state.conn, payload, user.id)
             .await
             .map_err(|e| {

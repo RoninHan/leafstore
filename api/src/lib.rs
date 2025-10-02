@@ -14,16 +14,20 @@ use middleware::auth::Auth;
 use migration::{Migrator, MigratorTrait};
 use service::sea_orm::Database;
 
-use std::env;
+use std::{env, fmt::format};
 use tera::Tera;
 use tower_cookies::CookieManagerLayer;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
+use tracing;
 
-use crate::controller::user::UserController;
 use crate::controller::block::BlockController;
 use crate::controller::search_history::SearchHistoryController;
+use crate::controller::user::UserController;
 
+use minio::s3::creds::StaticProvider;
+use minio::s3::http::BaseUrl;
+use minio::s3::{response::BucketExistsResponse, types::S3Api, Client, ClientBuilder};
 
 use tools::AppState;
 
@@ -46,18 +50,19 @@ async fn start() -> anyhow::Result<()> {
     let port = env::var("PORT").expect("PORT is not set in .env file");
     let server_url = format!("{host}:{port}");
 
-    // 初始化 MinIO 客戶端
-    let endpoint = "http://127.0.0.1:9000";
-    let access_key = "minioadmin";
-    let secret_key = "minioadmin";
-    let bucket = "photos";
+    // 初始化 MinIO 客戶端 (minio crate v0.3)
+    let base_url = "http://localhost:9000/".parse::<BaseUrl>()?;
+    let bucket = std::env::var("MINIO_BUCKET").unwrap_or_else(|_| "collection".to_string());
 
-    let minio = MinioClient::new(endpoint, access_key, secret_key, None).unwrap();
+    let static_provider = StaticProvider::new("minioadmin", "minioadmin", None);
+    let client = ClientBuilder::new(base_url.clone())
+        .provider(Some(Box::new(static_provider)))
+        .build()?;
 
-    // 確保 bucket 存在
-    if let Ok(false) = minio.bucket_exists(bucket).send().await {
-        let _ = minio.create_bucket(bucket).send().await;
-    }
+    let resp: BucketExistsResponse = client.bucket_exists(bucket.clone()).send().await?;
+    if !resp.exists {
+        client.create_bucket(bucket.clone()).send().await.unwrap();
+    };
 
     // 连接数据库并执行迁移
     let conn = Database::connect(db_url)
@@ -69,15 +74,19 @@ async fn start() -> anyhow::Result<()> {
     let templates = Tera::new(concat!(env!("CARGO_MANIFEST_DIR"), "/templates/**/*"))
         .expect("Tera initialization failed");
 
-        let base_url = "http://localhost:9000/photos";
+    let base_url = format!("http://localhost:9000/{}", bucket.clone());
 
     // 创建应用状态
-    let state = AppState { templates, conn, minio,base_url };
+    let state = AppState {
+        templates,
+        conn,
+        client,
+        bucket,
+        base_url,
+    };
 
     // 配置路由
     let app = Router::new()
-   
-
         // 用户认证相关路由
         .route("/api/login", post(UserController::login))
         // 用户管理相关路由
@@ -116,65 +125,61 @@ async fn start() -> anyhow::Result<()> {
                 Auth::authorization_middleware,
             )),
         )
-         // block 相关路由
+        // block 相关路由
         .route(
             "/api/block",
-            get(controller::block::BlockController::block_list)
-                .layer(axum_middleware::from_fn_with_state(
-                    state.clone(),
-                    Auth::authorization_middleware,
-                )),
+            get(controller::block::BlockController::block_list).layer(
+                axum_middleware::from_fn_with_state(state.clone(), Auth::authorization_middleware),
+            ),
         )
         .route(
             "/api/block/:id",
-            get(controller::block::BlockController::get_block)
-                .layer(axum_middleware::from_fn_with_state(
-                    state.clone(),
-                    Auth::authorization_middleware,
-                )),
+            get(controller::block::BlockController::get_block).layer(
+                axum_middleware::from_fn_with_state(state.clone(), Auth::authorization_middleware),
+            ),
         )
         .route(
             "/api/block/new",
-            post(controller::block::BlockController::create_block)
-                .layer(axum_middleware::from_fn_with_state(
-                    state.clone(),
-                    Auth::authorization_middleware,
-                )),
+            post(controller::block::BlockController::create_block).layer(
+                axum_middleware::from_fn_with_state(state.clone(), Auth::authorization_middleware),
+            ),
         )
-
         .route(
             "/api/block/update/:id",
-            post(controller::block::BlockController::update_block)
-                .layer(axum_middleware::from_fn_with_state(
-                    state.clone(),
-                    Auth::authorization_middleware,
-                )),
+            post(controller::block::BlockController::update_block).layer(
+                axum_middleware::from_fn_with_state(state.clone(), Auth::authorization_middleware),
+            ),
         )
         .route(
             "/api/block/delete/:id",
-            delete(controller::block::BlockController::delete_block)
-                .layer(axum_middleware::from_fn_with_state(
-                    state.clone(),
-                    Auth::authorization_middleware,
-                )),
+            delete(controller::block::BlockController::delete_block).layer(
+                axum_middleware::from_fn_with_state(state.clone(), Auth::authorization_middleware),
+            ),
         )
         .route(
             "/api/search_history",
-            get(SearchHistoryController::get_search_history_by_uid)
-                .layer(axum_middleware::from_fn_with_state(
-                    state.clone(),
-                    Auth::authorization_middleware,
-                )),
+            get(SearchHistoryController::get_search_history_by_uid).layer(
+                axum_middleware::from_fn_with_state(state.clone(), Auth::authorization_middleware),
+            ),
         )
-        .route("/api/search_history/new", post(SearchHistoryController::create_search_history).layer(axum_middleware::from_fn_with_state(
-                    state.clone(),
-                    Auth::authorization_middleware,
-                )),)
-        .route("/api/search_history/delete/:id", delete(SearchHistoryController::delete_all_search_history).layer(axum_middleware::from_fn_with_state(
-            state.clone(),
-            Auth::authorization_middleware,
-        )))
-
+        .route(
+            "/api/search_history/new",
+            post(SearchHistoryController::create_search_history).layer(
+                axum_middleware::from_fn_with_state(state.clone(), Auth::authorization_middleware),
+            ),
+        )
+        .route(
+            "/api/search_history/delete/:id",
+            delete(SearchHistoryController::delete_all_search_history).layer(
+                axum_middleware::from_fn_with_state(state.clone(), Auth::authorization_middleware),
+            ),
+        )
+        .route("/api/upload_pic", post(controller::block::BlockController::upload_pic).layer(
+            axum_middleware::from_fn_with_state(state.clone(), Auth::authorization_middleware),
+        ))  
+        .route("/api/delete_pic", post(controller::block::BlockController::delete_pic).layer(
+            axum_middleware::from_fn_with_state(state.clone(), Auth::authorization_middleware),
+        ))
         // 静态文件服务
         .nest_service(
             "/static",

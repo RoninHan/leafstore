@@ -1,11 +1,13 @@
 use serde::{Deserialize, Serialize};
 use service::sea_orm::DatabaseConnection;
 use tera::Tera;
+use minio::s3::Client;
 #[derive(Clone)]
 pub struct AppState {
     pub templates: Tera,
     pub conn: DatabaseConnection,
-    pub minio: MinioClient,
+    pub client: Client,
+    pub bucket: String,
     pub base_url: String,
 }
 

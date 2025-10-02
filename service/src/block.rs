@@ -3,11 +3,13 @@ use chrono::Utc;
 use prelude::DateTimeWithTimeZone;
 use sea_orm::{sqlx::types::uuid, *};
 use serde::{Deserialize, Serialize};
+use serde_json;
+
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct BlockModel {
     pub context: Option<String>,
-    pub imgs: Option<sea_orm::prelude::Json>,
+    pub imgs: Option<Vec<String>>,
     pub location: Option<String>,
     pub latitude_and_longitude: Option<String>,
     pub draft: Option<bool>,
@@ -16,13 +18,13 @@ pub struct BlockModel {
 pub struct BlockServices;
 
 impl BlockServices {
-    pub async fn create_block(db: &DbConn, form_data: BlockModel, user_id: uuid::Uuid) -> Result<blocks::ActiveModel, DbErr> {
+    pub async fn create_block(db: &DbConn, form_data: BlockModel, user_id: uuid::Uuid) -> Result<blocks::Model, DbErr> {
         let now = DateTimeWithTimeZone::from(Utc::now());
         blocks::ActiveModel {
             id: Set(uuid::Uuid::new_v4()),
             pid: Set(Some(user_id.to_string())),
             context: Set(form_data.context),
-            imgs: Set(form_data.imgs),
+            imgs: Set(form_data.imgs.map(|imgs| serde_json::to_value(imgs).unwrap())),
             location: Set(form_data.location),
             latitude_and_longitude: Set(form_data.latitude_and_longitude),
             draft: Set(form_data.draft),
@@ -30,7 +32,7 @@ impl BlockServices {
             update_time: Set(now),
             ..Default::default()
         }
-        .save(db)
+        .insert(db)
         .await
     }
 
@@ -67,7 +69,7 @@ impl BlockServices {
         blocks::ActiveModel {
             id: block.id,
             context: Set(form_data.context),
-            imgs: Set(form_data.imgs),
+            imgs: Set(form_data.imgs.map(|imgs| serde_json::to_value(imgs).unwrap())),
             location: Set(form_data.location),
             latitude_and_longitude: Set(form_data.latitude_and_longitude),
             draft: Set(form_data.draft),
